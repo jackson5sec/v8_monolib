@@ -1,0 +1,212 @@
+name: Build V8 12.9.202 (Windows x64)
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Which configuration to build"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - both
+          - release
+          - debug
+
+env:
+  V8_VERSION: "12.9.202"
+  DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Determine which matrix legs to run based on the trigger / input
+  # ──────────────────────────────────────────────────────────────────────────
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          INPUT="${{ github.event.inputs.build_type }}"
+          if [[ "$INPUT" == "release" ]]; then
+            echo 'matrix=["release"]' >> "$GITHUB_OUTPUT"
+          elif [[ "$INPUT" == "debug" ]]; then
+            echo 'matrix=["debug"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix=["release","debug"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Build job – runs once per matrix entry on a Windows runner
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    needs: setup
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    name: "V8 ${{ env.V8_VERSION }} · Windows x64 · ${{ matrix.build_type }}"
+
+    steps:
+      # ── Checkout this repo ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Cache depot_tools ───────────────────────────────────────────────
+      - name: Cache depot_tools
+        id: cache-depot
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\depot_tools
+          key: depot_tools-${{ runner.os }}-20240101
+
+      - name: Fetch depot_tools (if not cached)
+        if: steps.cache-depot.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$env:RUNNER_TEMP\depot_tools"
+
+      - name: Add depot_tools to PATH
+        shell: pwsh
+        run: |
+          "$env:RUNNER_TEMP\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ── Cache V8 source tree ────────────────────────────────────────────
+      - name: Cache V8 source
+        id: cache-v8
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\v8_src
+          key: v8-src-${{ env.V8_VERSION }}-${{ runner.os }}
+
+      - name: Fetch V8 source (if not cached)
+        if: steps.cache-v8.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\v8_src"
+          Set-Location "$env:RUNNER_TEMP\v8_src"
+          fetch v8
+
+      - name: Sync to V8 ${{ env.V8_VERSION }}
+        shell: pwsh
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+        run: |
+          Set-Location "$env:RUNNER_TEMP\v8_src\v8"
+          git fetch --tags
+          git checkout "refs/tags/$env:V8_VERSION"
+          gclient sync --with_branch_heads --with_tags --reset --force
+
+      # ── Generate GN build files ─────────────────────────────────────────
+      - name: Generate build files (${{ matrix.build_type }})
+        shell: pwsh
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+        run: |
+          $gnArgs = (Get-Content "gn_args\${{ matrix.build_type }}.gn" -Raw) -replace "`r`n"," " -replace "`n"," "
+          Set-Location "$env:RUNNER_TEMP\v8_src\v8"
+          gn gen "out\${{ matrix.build_type }}" --args="$gnArgs"
+
+      # ── Build v8_monolith ───────────────────────────────────────────────
+      - name: Build v8_monolith (${{ matrix.build_type }})
+        shell: pwsh
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+        run: |
+          Set-Location "$env:RUNNER_TEMP\v8_src\v8"
+          ninja -C "out\${{ matrix.build_type }}" v8_monolith -j $([Environment]::ProcessorCount)
+
+      # ── Collect artifacts ───────────────────────────────────────────────
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $dest = "artifacts\${{ matrix.build_type }}"
+          New-Item -ItemType Directory -Force -Path "$dest\include" | Out-Null
+
+          # Static library
+          Copy-Item "$env:RUNNER_TEMP\v8_src\v8\out\${{ matrix.build_type }}\obj\v8_monolith.lib" `
+                    "$dest\v8_monolith.lib" -Force
+
+          # Public headers
+          Copy-Item "$env:RUNNER_TEMP\v8_src\v8\include\*" "$dest\include\" -Recurse -Force
+
+          # PDB files (debug symbols – present in both configs, essential for debug)
+          Get-ChildItem "$env:RUNNER_TEMP\v8_src\v8\out\${{ matrix.build_type }}" `
+            -Filter "*.pdb" -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName "$dest\" -Force }
+
+          Write-Host "Artifact contents:"
+          Get-ChildItem $dest -Recurse | Select-Object FullName, Length
+
+      # ── Upload artifacts ────────────────────────────────────────────────
+      - name: Upload ${{ matrix.build_type }} artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-${{ env.V8_VERSION }}-windows-x64-${{ matrix.build_type }}
+          path: artifacts/${{ matrix.build_type }}/
+          retention-days: 90
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # On tag pushes: bundle both builds into a GitHub Release
+  # ──────────────────────────────────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: v8-${{ env.V8_VERSION }}-windows-x64-release
+          path: dist/release
+
+      - name: Download debug artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: v8-${{ env.V8_VERSION }}-windows-x64-debug
+          path: dist/debug
+
+      - name: Zip artifacts
+        run: |
+          cd dist
+          zip -r ../v8-${{ env.V8_VERSION }}-windows-x64-release.zip release/
+          zip -r ../v8-${{ env.V8_VERSION }}-windows-x64-debug.zip debug/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "V8 ${{ env.V8_VERSION }} · Windows x64"
+          body: |
+            ## V8 ${{ env.V8_VERSION }} – Windows x64 static libraries
+
+            Both **Release** and **Debug** builds of `v8_monolith.lib` with matching public headers.
+
+            ### Build configuration
+            - Monolithic static library (`v8_monolith.lib`)
+            - No ICU / i18n
+            - No WebAssembly
+            - No inspector / DevTools protocol
+            - No sandbox / pointer compression
+            - No snapshot
+            - Target: `x64`
+
+            ### Usage
+            Link against `v8_monolith.lib` and add `include/` to your include path.
+            For the debug build, also add the bundled `.pdb` files to your debugger symbol path.
+          files: |
+            v8-${{ env.V8_VERSION }}-windows-x64-release.zip
+            v8-${{ env.V8_VERSION }}-windows-x64-debug.zip
