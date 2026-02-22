@@ -114,9 +114,13 @@ jobs:
         env:
           DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
         run: |
-          $gnArgs = (Get-Content "gn_args\${{ matrix.build_type }}.gn" -Raw) -replace "`r`n"," " -replace "`n"," "
+          # Copy the .gn args file directly into the output dir as args.gn
+          # This avoids all shell quoting issues with string values like target_cpu = "x64"
+          $outDir = "$env:RUNNER_TEMP\v8_src\v8\out\${{ matrix.build_type }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Copy-Item "gn_args\${{ matrix.build_type }}.gn" "$outDir\args.gn" -Force
           Set-Location "$env:RUNNER_TEMP\v8_src\v8"
-          gn gen "out\${{ matrix.build_type }}" --args="$gnArgs"
+          gn gen "out\${{ matrix.build_type }}"
 
       # ── Build v8_monolith ───────────────────────────────────────────────
       - name: Build v8_monolith (${{ matrix.build_type }})
