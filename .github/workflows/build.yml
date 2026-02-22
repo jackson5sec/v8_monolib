@@ -54,7 +54,7 @@ jobs:
       matrix:
         build_type: ${{ fromJson(needs.setup.outputs.matrix) }}
 
-    name: "V8 ${{ env.V8_VERSION }} · Windows x64 · ${{ matrix.build_type }}"
+    name: "V8 12.9.202 · Windows x64 · ${{ matrix.build_type }}"
 
     steps:
       # ── Checkout this repo ──────────────────────────────────────────────
@@ -153,7 +153,7 @@ jobs:
       - name: Upload ${{ matrix.build_type }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: v8-${{ env.V8_VERSION }}-windows-x64-${{ matrix.build_type }}
+          name: v8-12.9.202-windows-x64-${{ matrix.build_type }}
           path: artifacts/${{ matrix.build_type }}/
           retention-days: 90
 
@@ -171,27 +171,27 @@ jobs:
       - name: Download release artifact
         uses: actions/download-artifact@v4
         with:
-          name: v8-${{ env.V8_VERSION }}-windows-x64-release
+          name: v8-12.9.202-windows-x64-release
           path: dist/release
 
       - name: Download debug artifact
         uses: actions/download-artifact@v4
         with:
-          name: v8-${{ env.V8_VERSION }}-windows-x64-debug
+          name: v8-12.9.202-windows-x64-debug
           path: dist/debug
 
       - name: Zip artifacts
         run: |
           cd dist
-          zip -r ../v8-${{ env.V8_VERSION }}-windows-x64-release.zip release/
-          zip -r ../v8-${{ env.V8_VERSION }}-windows-x64-debug.zip debug/
+          zip -r ../v8-12.9.202-windows-x64-release.zip release/
+          zip -r ../v8-12.9.202-windows-x64-debug.zip debug/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "V8 ${{ env.V8_VERSION }} · Windows x64"
+          name: "V8 12.9.202 · Windows x64"
           body: |
-            ## V8 ${{ env.V8_VERSION }} – Windows x64 static libraries
+            ## V8 12.9.202 – Windows x64 static libraries
 
             Both **Release** and **Debug** builds of `v8_monolith.lib` with matching public headers.
 
@@ -208,5 +208,5 @@ jobs:
             Link against `v8_monolith.lib` and add `include/` to your include path.
             For the debug build, also add the bundled `.pdb` files to your debugger symbol path.
           files: |
-            v8-${{ env.V8_VERSION }}-windows-x64-release.zip
-            v8-${{ env.V8_VERSION }}-windows-x64-debug.zip
+            v8-12.9.202-windows-x64-release.zip
+            v8-12.9.202-windows-x64-debug.zip
